@@ -131,9 +131,9 @@ with ctl5:
 # Secondary filters row
 flt1, flt2, flt3 = st.columns([1.1, 1.1, 2.8])
 with flt1:
-    min_vol = st.number_input("Min Volume", min_value=0, value=100, step=25)
+    min_vol = st.number_input("Min Volume", min_value=0, value=50, step=25)
 with flt2:
-    min_oi = st.number_input("Min Open Interest", min_value=0, value=250, step=100)
+    min_oi = st.number_input("Min Open Interest", min_value=0, value=100, step=25)
 with flt3:
     max_spread_pct = st.number_input(
         "Max Spread % (e.g. 5 = 5%)",
