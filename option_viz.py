@@ -106,7 +106,55 @@ def pick_threshold_tier(base_df: pd.DataFrame) -> tuple[str, int, int, float]:
     # Normal
     return ("Normal", 50, 200, 0.1)
 
+@st.cache_data(ttl=3600)
+def get_company_name(ticker: str) -> str:
+    try:
+        info = yf.Ticker(ticker).info
+        return info.get("longName") or info.get("shortName") or ""
+    except Exception:
+        return ""
 
+
+@st.cache_data(ttl=30)
+def get_quote_snapshot(ticker: str) -> tuple[float | None, float | None]:
+    """
+    Returns (last_price, prev_close). Robust across yfinance versions and weekends.
+    """
+    try:
+        t = yf.Ticker(ticker)
+
+        # Try fast_info with multiple key variants
+        fi = getattr(t, "fast_info", None)
+        if fi:
+            last = (
+                fi.get("last_price")
+                or fi.get("lastPrice")
+                or fi.get("regularMarketPrice")
+            )
+            prev = (
+                fi.get("previous_close")
+                or fi.get("previousClose")
+                or fi.get("regularMarketPreviousClose")
+            )
+            if last is not None and prev is not None:
+                return (float(last), float(prev))
+
+        # Fallback: use several days to survive weekends/holidays
+        hist = t.history(period="10d", interval="1d", auto_adjust=False)
+        if hist is None or hist.empty or "Close" not in hist.columns:
+            return (None, None)
+
+        closes = hist["Close"].dropna()
+        if len(closes) == 0:
+            return (None, None)
+
+        last_px = float(closes.iloc[-1])
+        prev_close = float(closes.iloc[-2]) if len(closes) >= 2 else None
+        return (last_px, prev_close)
+
+    except Exception:
+        return (None, None)
+    
 
 @st.cache_data(show_spinner=True, ttl=600)
 def load_chain(ticker: str, max_exps: int):
@@ -218,8 +266,13 @@ def build_density_strip(values, threshold, label, theme_bg, theme_text,
 # ============================
 # UI
 # ============================
+title_slot = st.empty()
+meta_slot = st.empty()
 
-st.title("Options Liquidity Map")
+title_slot.title("Options Liquidity Map")
+
+st.write("")
+st.write("")
 
 ctl1, ctl2, ctl3, ctl4, ctl5 = st.columns([1,1,1.4,1.6,2])
 
@@ -241,6 +294,46 @@ with ctl5:
         ["Liquidity Score", "Spread %", "Open Interest", "Volume"],
     )
 
+
+ticker_u = (ticker or "").strip().upper()
+
+company_name = get_company_name(ticker_u) if ticker_u else ""
+last_px, prev_close = get_quote_snapshot(ticker_u) if ticker_u else (None, None)
+
+# Subtitle: price + % change (if available)
+if last_px is not None and prev_close not in (None, 0):
+    pct = (last_px - prev_close) / prev_close
+    sign = "+" if pct >= 0 else ""
+
+    pct = None
+    if last_px is not None and prev_close not in (None, 0):
+        pct = (last_px - prev_close) / prev_close
+
+    # Colors
+    chg_color = "#00C853" if (pct is not None and pct >= 0) else "#FF1744"  # green / red
+    muted = st.get_option("theme.textColor") or "#999999"
+
+    # Display strings
+    ticker_disp = ticker_u if ticker_u else "—"
+    name_disp = company_name if company_name else ""
+    price_disp = f"${last_px:,.2f}" if last_px is not None else "—"
+    pct_disp = (f"{'+' if pct is not None and pct >= 0 else ''}{pct*100:.2f}%"
+            if pct is not None else "")
+
+    # Render: larger than caption, below title
+    meta_slot.markdown(
+        f"""
+        <div style="font-size:1.05rem; line-height:1.35; margin-top:-6px;">
+        <span style="font-weight:700;">{ticker_disp}</span>
+        <span style="color:{muted};"> — {name_disp}</span>
+        <span style="margin-left:14px; font-weight:700; color:{chg_color};">{price_disp}</span>
+        <span style="margin-left:10px; font-weight:700; color:{chg_color};">{pct_disp}</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    
 
 # ============================
 # Data
