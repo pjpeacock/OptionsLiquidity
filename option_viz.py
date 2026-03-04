@@ -570,7 +570,7 @@ topn["Bid"] = pd.to_numeric(topn["bid"], errors="coerce")
 topn["Ask"] = pd.to_numeric(topn["ask"], errors="coerce")
 topn["Mid"] = pd.to_numeric(topn["mid"], errors="coerce")
 
-topn["Spread %"] = pd.to_numeric(topn["spread_pct"], errors="coerce")
+topn["Spread %"] = pd.to_numeric(topn["spread_pct"], errors="coerce") * 100
 
 topn["Volume"] = pd.to_numeric(topn["volume"], errors="coerce").fillna(0).astype(int)
 topn["Open Interest"] = pd.to_numeric(topn["openInterest"], errors="coerce").fillna(0).astype(int)
@@ -612,7 +612,7 @@ st.dataframe(
             "Spread %",
             format="%.2f%%",
             min_value=0.0,
-            max_value=1.0,
+            max_value=100.0,
         ),
         "Liquidity Score": st.column_config.NumberColumn(format="%.2f"),
     },
