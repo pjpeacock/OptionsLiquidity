@@ -148,7 +148,7 @@ def get_company_name(ticker: str) -> str:
 
 # Fetch a lightweight quote snapshot (last price + previous close).
 # Robust to weekends/holidays and yfinance differences; cached briefly to reduce calls.
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=300)
 def get_quote_snapshot(ticker: str) -> tuple[float | None, float | None]:
     """
     Returns (last_price, prev_close). Robust across yfinance versions and weekends.
@@ -192,7 +192,22 @@ def get_quote_snapshot(ticker: str) -> tuple[float | None, float | None]:
 # Cached option chain load (screening-grade; yfinance isn’t guaranteed real-time).
 @st.cache_data(show_spinner=True, ttl=600)
 def load_chain(ticker: str, max_exps: int):
-    return build_liquidity_frame(ticker, max_exps)
+    """
+    Returns (df, err_msg). df is empty on error.
+    """
+    try:
+        df = build_liquidity_frame(ticker, max_exps)
+        return df, ""
+    except Exception as e:
+        if is_rate_limit_error(e):
+            return pd.DataFrame(), (
+                "Yahoo Finance is rate-limiting requests right now (HTTP 429). "
+                "Try again in a minute, reduce expirations, or switch tickers."
+            )
+        return pd.DataFrame(), (
+            "Unable to load options data right now. "
+            "Please try again shortly."
+        )
 
 def optionstrat_symbol(under: str, expiry_yyyy_mm_dd: str, right: str, strike: float) -> str:
     """
@@ -213,6 +228,16 @@ def optionstrat_symbol(under: str, expiry_yyyy_mm_dd: str, right: str, strike: f
 
     return f".{under}{exp}{right}{k_str}"
 
+# check for rate limiting from yahoo.
+def is_rate_limit_error(e: Exception) -> bool:
+    msg = str(e).lower()
+    return any(s in msg for s in [
+        "rate limit", "too many requests", "429", "yfratelimiterror"
+    ])
+
+
+def is_plausible_ticker(s: str) -> bool:
+    return 1 <= len(s) <= 6 and s.isalnum()  # simple gate; adjust if needed
 
 # ============================
 # Density Strip Builder
@@ -342,7 +367,8 @@ st.write("")
 ctl1, ctl2, ctl3, ctl4, ctl5 = st.columns([1, 1, 1.4, 1.6, 2])
 
 with ctl1:
-    ticker = st.text_input("Ticker", "NVDA")
+    ticker = st.text_input("Ticker", "NVDA", key="ticker_input")
+    ticker = st.session_state["ticker_input"].strip().upper()
 
 with ctl2:
     max_exps = st.slider("Expirations", 1, 40, 12)
@@ -361,8 +387,15 @@ with ctl5:
 
 # Header line: ticker + company + last price + % change (colored)
 ticker_u = (ticker or "").strip().upper()
-company_name = get_company_name(ticker_u) if ticker_u else ""
-last_px, prev_close = get_quote_snapshot(ticker_u) if ticker_u else (None, None)
+allow_fetch = is_plausible_ticker(ticker_u)
+
+if st.session_state.get("last_ticker_u") != ticker_u:
+    st.session_state["last_ticker_u"] = ticker_u
+    st.session_state["company_name"] = get_company_name(ticker_u) if ticker_u else ""
+    st.session_state["quote"] = get_quote_snapshot(ticker_u) if ticker_u else (None, None)
+    
+company_name = get_company_name(ticker_u) if allow_fetch else ""
+last_px, prev_close = get_quote_snapshot(ticker_u) if allow_fetch else (None, None)
 
 pct = None
 if last_px is not None and prev_close not in (None, 0):
@@ -395,7 +428,15 @@ meta_slot.markdown(
 # ============================
 
 # Load option chains for selected ticker/expiration depth (cached)
-df = load_chain(ticker, max_exps)
+df, err_msg = load_chain(ticker_u, max_exps) if allow_fetch else (pd.DataFrame(), "Enter a valid ticker.")
+
+
+if err_msg:
+    st.error(err_msg)
+    if st.button("Retry"):
+        st.cache_data.clear()
+        st.rerun()
+    st.stop()
 
 if df.empty:
     st.warning("No options returned.")
