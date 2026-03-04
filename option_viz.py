@@ -194,6 +194,25 @@ def get_quote_snapshot(ticker: str) -> tuple[float | None, float | None]:
 def load_chain(ticker: str, max_exps: int):
     return build_liquidity_frame(ticker, max_exps)
 
+def optionstrat_symbol(under: str, expiry_yyyy_mm_dd: str, right: str, strike: float) -> str:
+    """
+    Builds OptionStrat-style contract id like:
+      .AAPL260320C265
+    under: "AAPL"
+    expiry: "2026-03-20"
+    right: "C" or "P"
+    strike: numeric
+    """
+    exp = pd.to_datetime(expiry_yyyy_mm_dd).strftime("%y%m%d")
+
+    k = float(strike)
+    if k.is_integer():
+        k_str = str(int(k))
+    else:
+        k_str = str(k).rstrip("0").rstrip(".")
+
+    return f".{under}{exp}{right}{k_str}"
+
 
 # ============================
 # Density Strip Builder
@@ -584,8 +603,17 @@ topn["Contract"] = (
     + topn["Strike"].astype(str)
 )
 
+# Add the optionstrat link
+under = (ticker or "").strip().upper()
+topn["Links"] = topn.apply(
+    lambda r: f"https://optionstrat.com/build/long-{'call' if r['right']=='C' else 'put'}/{under}/"
+              f"{optionstrat_symbol(under, r['Expiration'], r['right'], r['Strike'])}",
+    axis=1,
+)
+
 display_cols = [
     "Contract",
+    "Links",
     "Type",
     "Expiration",
     "Strike",
@@ -600,11 +628,16 @@ display_cols = [
 
 grid_df = topn[display_cols].copy()
 
-st.dataframe(
+st.data_editor(
     grid_df,
     use_container_width=True,
     hide_index=True,
+    disabled=True,
     column_config={
+        "Links": st.column_config.LinkColumn(
+            "Links",
+            display_text="OS",
+        ),
         "Bid": st.column_config.NumberColumn(format="%.2f"),
         "Ask": st.column_config.NumberColumn(format="%.2f"),
         "Mid": st.column_config.NumberColumn(format="%.2f"),
@@ -612,7 +645,7 @@ st.dataframe(
             "Spread %",
             format="%.2f%%",
             min_value=0.0,
-            max_value=100.0,
+            max_value=100.0,   # use 1.0 if you kept Spread % as decimal; 100.0 if percent-units
         ),
         "Liquidity Score": st.column_config.NumberColumn(format="%.2f"),
     },
