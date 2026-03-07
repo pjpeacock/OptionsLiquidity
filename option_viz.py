@@ -239,7 +239,12 @@ def is_rate_limit_error(e: Exception) -> bool:
 def is_plausible_ticker(s: str) -> bool:
     return 1 <= len(s) <= 6 and s.isalnum()  # simple gate; adjust if needed
 
-
+# Compute an absolute Tradability Score (0–100) for the stock’s option market.
+# Only near-ATM contracts (±15% of spot) from the nearest expirations are evaluated.
+# Each contract is scored on fixed thresholds for spread % (tightness), spread $ (execution cost),
+# open interest (market depth), and volume (recent activity). The best contracts are aggregated
+# and scaled to produce a stock-level score indicating whether the option chain is broadly
+# tradable (tight spreads and active markets) or thin and costly to trade.
 def compute_tradability_score(df: pd.DataFrame, spot_price: float | None) -> tuple[float | None, str]:
     """
     Returns (tradability_score_0_to_100, rating_text)
