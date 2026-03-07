@@ -239,6 +239,95 @@ def is_rate_limit_error(e: Exception) -> bool:
 def is_plausible_ticker(s: str) -> bool:
     return 1 <= len(s) <= 6 and s.isalnum()  # simple gate; adjust if needed
 
+
+def compute_tradability_score(df: pd.DataFrame, spot_price: float | None) -> tuple[float | None, str]:
+    """
+    Returns (tradability_score_0_to_100, rating_text)
+    """
+    if df.empty or spot_price is None or spot_price <= 0:
+        return None, "Unknown"
+
+    work = df.copy()
+
+    # Focus on nearer expirations
+    exps = sorted(work["expiry"].dropna().unique())
+    keep_exps = exps[:6]
+    work = work[work["expiry"].isin(keep_exps)]
+
+    # Focus on near-ATM strikes
+    work = work[(work["strike"] >= spot_price * 0.85) & (work["strike"] <= spot_price * 1.15)]
+
+    if work.empty:
+        return None, "Unknown"
+
+    work["spread_abs"] = pd.to_numeric(work["ask"], errors="coerce") - pd.to_numeric(work["bid"], errors="coerce")
+    work["mid"] = (pd.to_numeric(work["bid"], errors="coerce") + pd.to_numeric(work["ask"], errors="coerce")) / 2.0
+    work["spread_pct"] = np.where(work["mid"] > 0, work["spread_abs"] / work["mid"], np.nan)
+
+    work["volume"] = pd.to_numeric(work["volume"], errors="coerce").fillna(0)
+    work["openInterest"] = pd.to_numeric(work["openInterest"], errors="coerce").fillna(0)
+
+    def score_spread_pct(x):
+        if pd.isna(x): return 0
+        if x <= 0.03: return 4
+        if x <= 0.05: return 3
+        if x <= 0.10: return 2
+        if x <= 0.20: return 1
+        return 0
+
+    def score_spread_abs(x):
+        if pd.isna(x): return 0
+        if x <= 0.05: return 2
+        if x <= 0.15: return 1
+        return 0
+
+    def score_oi(x):
+        if x >= 1000: return 2
+        if x >= 250: return 1
+        return 0
+
+    def score_vol(x):
+        if x >= 100: return 2
+        if x >= 25: return 1
+        return 0
+
+    work["contract_tradability"] = (
+        work["spread_pct"].apply(score_spread_pct)
+        + work["spread_abs"].apply(score_spread_abs)
+        + work["openInterest"].apply(score_oi)
+        + work["volume"].apply(score_vol)
+    )
+
+    top_scores = work["contract_tradability"].sort_values(ascending=False).head(10)
+
+    if top_scores.empty:
+        return None, "Unknown"
+
+    score_0_100 = float(top_scores.median() * 10)
+
+    if score_0_100 >= 80:
+        rating = "Excellent"
+    elif score_0_100 >= 60:
+        rating = "Good"
+    elif score_0_100 >= 40:
+        rating = "Marginal"
+    else:
+        rating = "Poor"
+
+    return score_0_100, rating
+
+def tradability_color(score: float | None) -> str:
+    if score is None:
+        return "#9E9E9E"
+    if score >= 80:
+        return "#00C853"   # green
+    if score >= 60:
+        return "#AEEA00"   # yellow-green
+    if score >= 40:
+        return "#FFB300"   # orange
+    return "#FF5252"       # red
+
+
 # ============================
 # Density Strip Builder
 # ============================
@@ -442,12 +531,17 @@ if df.empty:
     st.warning("No options returned.")
     st.stop()
 
+# Get the overall tradability score for the current universe (used for a simple overall rating in the header)
+tradability_score, tradability_rating = compute_tradability_score(df, last_px)
+
+
 # Apply call/put selection to define the "universe" used for thresholds and strips
 base_df = df.copy()
 if cp_filter == "Calls":
     base_df = base_df[base_df["right"] == "C"]
 elif cp_filter == "Puts":
     base_df = base_df[base_df["right"] == "P"]
+
 
 # Auto-seed thresholds by tier when the universe changes (ticker/max_exps/calls-puts)
 universe_key = f"{ticker}|{max_exps}|{cp_filter}"
@@ -462,6 +556,40 @@ if st.session_state.get("universe_key") != universe_key:
 
 st.caption(f"Threshold tier: **{st.session_state.get('tier_name','')}**")
 
+if tradability_score is not None:
+    score_color = tradability_color(tradability_score)
+    bar_width = max(0, min(100, tradability_score))
+
+    st.markdown(
+        f"""
+        <div style="display:flex; align-items:center; gap:12px; margin-top:-4px; margin-bottom:6px;">
+            <div style="font-size:0.95rem;">
+                Tradability Score:
+                <span style="font-weight:700; color:{score_color};">
+                    {tradability_score:.0f}/100
+                </span>
+                <span style="color:{score_color}; font-weight:600;">
+                    ({tradability_rating})
+                </span>
+            </div>
+            <div style="
+                width:140px;
+                height:10px;
+                background:#2a2a2a;
+                border:1px solid #666;
+                border-radius:999px;
+                overflow:hidden;
+            ">
+                <div style="
+                    width:{bar_width}%;
+                    height:100%;
+                    background:{score_color};
+                "></div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 # ============================
 # Filters
